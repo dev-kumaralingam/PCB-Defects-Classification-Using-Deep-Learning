@@ -1,18 +1,13 @@
-from __future__ import print_function 
-# ximport skimage as sk
 import keras
-import cv2
 import numpy as np
 from keras.layers import Input, Dense, Dropout, Activation, Concatenate, BatchNormalization, Flatten
 from keras.models import Model
 from keras.layers import Conv2D, GlobalAveragePooling2D, AveragePooling2D, ZeroPadding2D, MaxPooling2D
 from keras.regularizers import l2
-from PIL import Image, ImageOps
 from keras.preprocessing.image import ImageDataGenerator
 from keras.optimizers import SGD
 from keras.callbacks import LearningRateScheduler
 import math
-
 
 def step_decay(epoch):
     initial_lrate = 0.01
@@ -20,8 +15,6 @@ def step_decay(epoch):
     epochs_drop = 7.0
     lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
     return lrate
-
-
 
 def DenseNet(input_shape=None, dense_blocks=3, dense_layers=-1, growth_rate=12, nb_classes=None, dropout_rate=None,
              bottleneck=False, compression=1.0, weight_decay=1e-4, depth=40):
@@ -47,46 +40,29 @@ def DenseNet(input_shape=None, dense_blocks=3, dense_layers=-1, growth_rate=12, 
     img_input = Input(shape=input_shape)
     nb_channels = growth_rate * 2
     
-    
     # Initial convolution layer
     x = ZeroPadding2D(padding=((3, 3), (3, 3)))(img_input)
-    x = Conv2D(nb_channels, (7,7),strides=2 , use_bias=False, kernel_regularizer=l2(weight_decay))(x) #
-    x = BatchNormalization(gamma_regularizer=l2(weight_decay), beta_regularizer=l2(weight_decay))(x)#
-    x = Activation('relu')(x)#
+    x = Conv2D(nb_channels, (7,7), strides=2, use_bias=False, kernel_regularizer=l2(weight_decay))(x)
+    x = BatchNormalization(gamma_regularizer=l2(weight_decay), beta_regularizer=l2(weight_decay))(x)
+    x = Activation('relu')(x)
     x = ZeroPadding2D(padding=((1,1), (1, 1)))(x)
-    x = MaxPooling2D(pool_size = (3, 3), strides = 2)(x) 
+    x = MaxPooling2D(pool_size=(3, 3), strides=2)(x)
     
     # Building dense blocks
     for block in range(dense_blocks):
-        
-        # Add dense block
         x, nb_channels = dense_block(x, dense_layers[block], nb_channels, growth_rate, dropout_rate, bottleneck, weight_decay)
         
         if block < dense_blocks - 1:  # if it's not the last dense block
-            # Add transition_block
             x = transition_layer(x, nb_channels, dropout_rate, compression, weight_decay)
             nb_channels = int(nb_channels * compression)
-    x = AveragePooling2D(pool_size = 7)(x) #DECIDING LINE
-    x = Flatten(data_format = 'channels_last')(x)
+    
+    x = GlobalAveragePooling2D()(x)
     x = Dense(nb_classes, activation='softmax', kernel_regularizer=l2(weight_decay), bias_regularizer=l2(weight_decay))(x)
     
-    model_name = None
-    if growth_rate >= 36:
-        model_name = 'widedense'
-    else:
-        model_name = 'dense'
-        
-    if bottleneck:
-        model_name = model_name + 'b'
-        
-    if compression < 1.0:
-        model_name = model_name + 'c'
-        
-    return Model(img_input, x, name=model_name), model_name
-
+    model = Model(img_input, x, name='densenet')
+    return model
 
 def dense_block(x, nb_layers, nb_channels, growth_rate, dropout_rate=None, bottleneck=False, weight_decay=1e-4):
-
     x_list = [x]
     for i in range(nb_layers):
         cb = convolution_block(x, growth_rate, dropout_rate, bottleneck, weight_decay)
@@ -95,58 +71,98 @@ def dense_block(x, nb_layers, nb_channels, growth_rate, dropout_rate=None, bottl
         nb_channels += growth_rate
     return x, nb_channels
 
-
-def convolution_block(x, nb_channels, dropout_rate=None, bottleneck=False, weight_decay=1e-4):
-
-    growth_rate = nb_channels/2
-    # Bottleneck
+def convolution_block(x, growth_rate, dropout_rate=None, bottleneck=False, weight_decay=1e-4):
     if bottleneck:
-        bottleneckWidth = 4
         x = BatchNormalization(gamma_regularizer=l2(weight_decay), beta_regularizer=l2(weight_decay))(x)
         x = Activation('relu')(x)
-        x = Conv2D(nb_channels * bottleneckWidth, (1, 1), use_bias=False, kernel_regularizer=l2(weight_decay))(x)
-        # Dropout
+        x = Conv2D(4 * growth_rate, (1, 1), use_bias=False, kernel_regularizer=l2(weight_decay))(x)
         if dropout_rate:
             x = Dropout(dropout_rate)(x)
     
-    # Standard (BN-ReLU-Conv)
     x = BatchNormalization(gamma_regularizer=l2(weight_decay), beta_regularizer=l2(weight_decay))(x)
     x = Activation('relu')(x)
-    x = Conv2D(nb_channels, (3, 3), padding='same', use_bias=False, kernel_regularizer=l2(weight_decay))(x)
+    x = Conv2D(growth_rate, (3, 3), padding='same', use_bias=False, kernel_regularizer=l2(weight_decay))(x)
     
-    # Dropout
     if dropout_rate:
         x = Dropout(dropout_rate)(x)
     
     return x
 
-
 def transition_layer(x, nb_channels, dropout_rate=None, compression=1.0, weight_decay=1e-4):
-
     x = BatchNormalization(gamma_regularizer=l2(weight_decay), beta_regularizer=l2(weight_decay))(x)
     x = Activation('relu')(x)
-    x = Conv2D(int(nb_channels*compression), (1, 1), padding='same',
-                      use_bias=False, kernel_regularizer=l2(weight_decay))(x)
+    x = Conv2D(int(nb_channels*compression), (1, 1), padding='same', use_bias=False, kernel_regularizer=l2(weight_decay))(x)
     
-    # Adding dropout
     if dropout_rate:
         x = Dropout(dropout_rate)(x)
     
     x = AveragePooling2D((2, 2), strides=(2, 2))(x)
     return x
 
-
 if __name__ == '__main__':
+    # Define the class labels
+    class_labels = ['missing_hole', 'mouse_bite', 'open_circuit', 'short', 'spur', 'spurious_copper']
+    nb_classes = len(class_labels)
+
+    # Create the model
+    model = DenseNet(input_shape=(64, 64, 1), dense_blocks=2, dense_layers=6, growth_rate=32, 
+                     nb_classes=nb_classes, bottleneck=True, depth=27, weight_decay=1e-5)
     
-    model = DenseNet(input_shape = (64,64,1) , dense_blocks = 2 , dense_layers = 6 , growth_rate = 32 , nb_classes = 6 , bottleneck = True , depth = 27, weight_decay = 1e-5)
-    print(model[0].summary())
-    opt = SGD(lr = 0.0 , momentum = 0.9)
-    model[0].compile(optimizer=opt , loss='categorical_crossentropy' , metrics=['accuracy']) 
-    train_datagen = ImageDataGenerator(data_format = "channels_last")
-    train_generator = train_datagen.flow_from_directory('TrainPath' , target_size = (64,64) , color_mode = 'grayscale' , batch_size = 8)  
-    STEP_SIZE_TRAIN=train_generator.n//train_generator.batch_size
+    print(model.summary())
+
+    # Compile the model
+    opt = SGD(lr=0.01, momentum=0.9)
+    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
+
+    # Set up data generators
+    train_datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=20,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        vertical_flip=True,
+        validation_split=0.2  # 20% of the data will be used for validation
+    )
+
+    train_generator = train_datagen.flow_from_directory(
+        'D:\\PCB Defect Classification\\PCB_DATASET\\images',
+        target_size=(64, 64),
+        color_mode='grayscale',
+        batch_size=32,
+        class_mode='categorical',
+        subset='training',
+        classes=class_labels
+    )
+
+    validation_generator = train_datagen.flow_from_directory(
+        'D:\\PCB Defect Classification\\PCB_DATASET\\images',
+        target_size=(64, 64),
+        color_mode='grayscale',
+        batch_size=32,
+        class_mode='categorical',
+        subset='validation',
+        classes=class_labels
+    )
+
+    # Set up callbacks
     lrate = LearningRateScheduler(step_decay, verbose=1)
     callbacks_list = [lrate]
-    model[0].fit_generator(train_generator , steps_per_epoch=STEP_SIZE_TRAIN , epochs = 25, callbacks=callbacks_list, verbose=1) 
-    model[0].save("SavePath")
 
+    # Train the model
+    history = model.fit(
+        train_generator,
+        steps_per_epoch=train_generator.samples // train_generator.batch_size,
+        validation_data=validation_generator,
+        validation_steps=validation_generator.samples // validation_generator.batch_size,
+        epochs=50,
+        callbacks=callbacks_list,
+        verbose=1
+    )
+
+    # Save the model
+    model.save("D:\\PCB Defect Classification\\Model\\Model.h5")
+
+    print("Training completed. Model saved as 'Model.h5'")
